@@ -67,10 +67,15 @@ function resolveDevWorkerEntry(): string {
   return candidate;
 }
 
+// Production used to spawn the daemon worker with no heap flags at all, so it inherited Node's
+// default limit, which is derived from total RAM rather than from the service cgroup. On a 12GB
+// host that is roughly 2GB, and the worker aborted against it under load.
+const PRODUCTION_WORKER_MAX_OLD_SPACE_MB = 4096;
+
 function resolveWorkerExecArgv(workerEntry: string, devMode: boolean): string[] {
   const execArgv = workerEntry.endsWith(".ts") ? ["--import", "tsx"] : [];
   if (!devMode) {
-    return execArgv;
+    return [`--max-old-space-size=${PRODUCTION_WORKER_MAX_OLD_SPACE_MB}`, ...execArgv];
   }
   const devArgs = [
     "--heapsnapshot-near-heap-limit=3",
