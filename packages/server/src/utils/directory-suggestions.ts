@@ -30,6 +30,14 @@ export interface SearchDirectoryEntriesOptions {
   limit?: number;
   maxDepth?: number;
   maxEntriesScanned?: number;
+  /** Scan cap for browse queries (empty query, or a query naming a directory). */
+  browseMaxEntriesScanned?: number;
+  /** Cap on children materialized from one directory listing, applied before sorting. */
+  maxChildrenPerDirectory?: number;
+  /** Wall-clock budget for a single scan. 0 disables the deadline. */
+  deadlineMs?: number;
+  /** Absolute deadline on the Date.now() timeline. Takes precedence over deadlineMs. */
+  deadlineAt?: number;
   confidentResultScanThreshold?: number;
   respectGitIgnore?: boolean;
 }
@@ -91,8 +99,22 @@ const DEFAULT_MAX_DEPTH = 12;
 const DEFAULT_MAX_ENTRIES_SCANNED = 20_000;
 const DIRECTORY_LIST_CACHE_TTL_MS = 8_000;
 const DIRECTORY_LIST_CACHE_MAX_ENTRIES = 4_000;
+// A listing of a six-figure-child directory is tens of megabytes and every scan can only
+// consume its scan budget, so cap both what is materialized and what is retained.
+const DIRECTORY_LIST_CACHE_MAX_CHILDREN = 5_000;
+const DEFAULT_MAX_CHILDREN_PER_DIRECTORY = 20_000;
 const GIT_IGNORED_PATHS_CACHE_TTL_MS = 8_000;
 const GIT_IGNORED_PATHS_CACHE_MAX_ENTRIES = 256;
+// A browse query (empty query, or a query naming a directory) used to list every child of
+// the target directory; bound it the way the tree search is bounded.
+const DEFAULT_BROWSE_MAX_ENTRIES_SCANNED = 4_000;
+// One scan may not run longer than this. A legitimate fuzzy search from a large home root
+// spends roughly 9s scanning its 20k-entry budget, so keep headroom above that while still
+// cutting the multi-minute tail seen in production.
+const DEFAULT_SEARCH_DEADLINE_MS = 15_000;
+// Suggestion scans are client-driven and used to run in unbounded numbers: sixteen were
+// observed in flight at once on a single connection.
+const MAX_CONCURRENT_SEARCHES = 2;
 // Windows does not reliably update directory mtime/ctime when children change,
 // so metadata cannot safely validate a cross-request listing cache there.
 const CAN_VALIDATE_DIRECTORY_CACHE_FROM_METADATA = process.platform !== "win32";
@@ -126,6 +148,8 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 ]);
 const directoryListCache = new Map<string, DirectoryListCacheEntry>();
 const gitIgnoredPathsCache = new Map<string, GitIgnoredPathsCacheEntry>();
+const searchGate: { active: number; waiters: Array<() => void> } = { active: 0, waiters: [] };
+const inFlightSearches = new Map<string, Promise<DirectorySuggestionEntry[]>>();
 
 // Discovery and retrieval filter differently, on purpose. Discovery — anything that ranks or
 // browses candidates the caller has not named — drops gitignored and hidden entries, so pickers
@@ -135,13 +159,100 @@ const gitIgnoredPathsCache = new Map<string, GitIgnoredPathsCacheEntry>();
 export async function searchDirectoryEntries(
   options: SearchDirectoryEntriesOptions,
 ): Promise<DirectorySuggestionEntry[]> {
+  const key = buildSearchKey(options);
+  const inFlight = inFlightSearches.get(key);
+  if (inFlight) return inFlight;
+
+  const run = (async () => {
+    await acquireSearchSlot();
+    try {
+      return await runSearchDirectoryEntries(options);
+    } finally {
+      releaseSearchSlot();
+    }
+  })();
+
+  inFlightSearches.set(key, run);
+  try {
+    return await run;
+  } finally {
+    inFlightSearches.delete(key);
+  }
+}
+
+function acquireSearchSlot(): Promise<void> {
+  if (searchGate.active < MAX_CONCURRENT_SEARCHES) {
+    searchGate.active += 1;
+    return Promise.resolve();
+  }
+  // The slot is handed straight to the waiter, so a caller that arrives while the queue drains
+  // cannot jump ahead of it.
+  return new Promise<void>((resolve) => {
+    searchGate.waiters.push(() => {
+      searchGate.active += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseSearchSlot(): void {
+  searchGate.active = Math.max(0, searchGate.active - 1);
+  const next = searchGate.waiters.shift();
+  if (next) next();
+}
+
+function resolveDeadlineAt(deadlineMs: number | undefined): number {
+  if (deadlineMs === 0) return Number.POSITIVE_INFINITY;
+  const windowMs =
+    typeof deadlineMs === "number" && Number.isFinite(deadlineMs) && deadlineMs > 0
+      ? deadlineMs
+      : DEFAULT_SEARCH_DEADLINE_MS;
+  return Date.now() + windowMs;
+}
+
+function isPastDeadline(input: SearchInput): boolean {
+  return Date.now() >= input.deadlineAt;
+}
+
+// Concurrent requests for identical input share one scan, so a client that re-asks while a
+// slow search is in flight cannot multiply the work. Every option that changes what the scan
+// reads or how it formats results belongs in the key; only the absolute deadline is left out,
+// because joiners inherit the deadline of the run they join rather than extending it.
+function buildSearchKey(options: SearchDirectoryEntriesOptions): string {
+  return JSON.stringify([
+    options.root,
+    options.query,
+    options.pathFormat,
+    options.pathQueryPolicy ?? "slashes",
+    options.blankQueryBehavior ?? "none",
+    options.includeFiles ?? false,
+    options.includeDirectories ?? true,
+    options.matchMode ?? "fuzzy",
+    options.limit ?? null,
+    options.respectGitIgnore ?? false,
+    options.rootAliases ?? [],
+    options.traversableHiddenDirectoryNames ?? [],
+    options.maxDepth ?? null,
+    options.maxEntriesScanned ?? null,
+    options.browseMaxEntriesScanned ?? null,
+    options.maxChildrenPerDirectory ?? null,
+    options.confidentResultScanThreshold ?? null,
+    options.deadlineMs ?? null,
+  ]);
+}
+
+async function runSearchDirectoryEntries(
+  options: SearchDirectoryEntriesOptions,
+): Promise<DirectorySuggestionEntry[]> {
+  const deadlineAt = options.deadlineAt ?? resolveDeadlineAt(options.deadlineMs);
   const root = await resolveDirectory(options.root);
   if (!root) return [];
 
   const gitIgnoredPaths = options.respectGitIgnore
     ? await loadGitIgnoredPaths(root)
     : new Set<string>();
-  const input = buildSearchInput(options, root, gitIgnoredPaths);
+  if (Date.now() >= deadlineAt) return [];
+  const input = buildSearchInput(options, root, gitIgnoredPaths, deadlineAt);
   if (!input) return [];
 
   const exact =
@@ -164,6 +275,7 @@ function buildSearchInput(
   options: SearchDirectoryEntriesOptions,
   root: string,
   gitIgnoredPaths: Set<string>,
+  deadlineAt: number,
 ): SearchInput | null {
   const includeDirectories = options.includeDirectories ?? true;
   const includeFiles = options.includeFiles ?? false;
@@ -190,6 +302,9 @@ function buildSearchInput(
     limit: normalizeLimit(options.limit),
     maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
     maxEntriesScanned: options.maxEntriesScanned ?? DEFAULT_MAX_ENTRIES_SCANNED,
+    browseMaxEntriesScanned: options.browseMaxEntriesScanned ?? DEFAULT_BROWSE_MAX_ENTRIES_SCANNED,
+    maxChildrenPerDirectory: options.maxChildrenPerDirectory ?? DEFAULT_MAX_CHILDREN_PER_DIRECTORY,
+    deadlineAt,
     confidentResultScanThreshold: options.confidentResultScanThreshold,
     gitIgnoredPaths,
   };
@@ -224,6 +339,9 @@ interface SearchInput {
   limit: number;
   maxDepth: number;
   maxEntriesScanned: number;
+  browseMaxEntriesScanned: number;
+  maxChildrenPerDirectory: number;
+  deadlineAt: number;
   confidentResultScanThreshold: number | undefined;
   gitIgnoredPaths: Set<string>;
 }
@@ -233,40 +351,43 @@ async function searchChildren(input: SearchInput): Promise<RankedEntry[]> {
   const parent = await realpath(visibleParent).catch(() => null);
   if (!parent || !isPathInsideRoot(input.root, parent)) return [];
   if (isGitIgnoredPath(parent, input)) return [];
-  const entries = await readChildren(parent);
-  return entries.flatMap((entry) => {
+  if (isPastDeadline(input)) return [];
+  const entries = await readChildren(parent, input.maxChildrenPerDirectory);
+  const ranked: RankedEntry[] = [];
+  let scanned = 0;
+  for (const entry of entries) {
+    if (scanned >= input.browseMaxEntriesScanned || isPastDeadline(input)) break;
+    scanned += 1;
     if (!isPathInsideRoot(input.root, entry.resolvedPath) || !shouldDiscover(entry, input))
-      return [];
+      continue;
     const candidate: TraversedEntry = {
       ...entry,
       visiblePath: path.join(visibleParent, entry.name),
       depth: 1,
     };
-    return shouldSuggest(candidate, input) ? [rank(candidate, input)] : [];
-  });
+    if (shouldSuggest(candidate, input)) ranked.push(rank(candidate, input));
+  }
+  return ranked;
 }
 
 async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
   if (!(input.maxEntriesScanned > 0)) return [];
-  const roots = (await readChildren(input.root)).filter((entry) =>
+  if (isPastDeadline(input)) return [];
+  const roots = (await readChildren(input.root, input.maxChildrenPerDirectory)).filter((entry) =>
     isPathInsideRoot(input.root, entry.resolvedPath),
   );
   const visited = new Set<string>([input.root]);
-  const branches = roots.flatMap((entry) =>
-    shouldDiscover(entry, input)
-      ? [
-          walkBranch(
-            { ...entry, visiblePath: path.join(input.root, entry.name), depth: 1 },
-            input,
-            visited,
-          ),
-        ]
-      : [],
+  const branches = expandChildBranches(
+    roots,
+    { visiblePath: input.root, depth: 0 },
+    input,
+    visited,
   );
   const ranked: RankedEntry[] = [];
   let scanned = 0;
   const threshold = input.confidentResultScanThreshold;
   for await (const entry of roundRobin(branches)) {
+    if (isPastDeadline(input)) break;
     scanned += 1;
     if (shouldSuggest(entry, input)) ranked.push(rank(entry, input));
     if (
@@ -292,26 +413,49 @@ async function* walkBranch(
     entry.depth >= input.maxDepth
   )
     return;
+  if (isPastDeadline(input)) return;
   visited.add(entry.resolvedPath);
-  const children = (await readChildren(entry.resolvedPath)).filter((child) =>
-    isPathInsideRoot(input.root, child.resolvedPath),
+  const children = (await readChildren(entry.resolvedPath, input.maxChildrenPerDirectory)).filter(
+    (child) => isPathInsideRoot(input.root, child.resolvedPath),
   );
-  const branches = children.flatMap((child) =>
-    shouldDiscover(child, input)
-      ? [
-          walkBranch(
-            {
-              ...child,
-              visiblePath: path.join(entry.visiblePath, child.name),
-              depth: entry.depth + 1,
-            },
-            input,
-            visited,
-          ),
-        ]
-      : [],
+  const branches = expandChildBranches(
+    children,
+    { visiblePath: entry.visiblePath, depth: entry.depth },
+    input,
+    visited,
   );
   yield* roundRobin(branches);
+}
+
+// Turns a directory listing into walk branches, bounded by the scan budget and the deadline.
+// The previous flatMap built one generator, one spread object and one joined path per child in
+// a single synchronous block: a directory with 146,304 children (observed under a home root)
+// blocked the event loop for about nine seconds and allocated tens of megabytes the scan budget
+// could never have consumed.
+function expandChildBranches(
+  children: ChildEntry[],
+  parent: { visiblePath: string; depth: number },
+  input: SearchInput,
+  visited: Set<string>,
+): Array<AsyncGenerator<TraversedEntry>> {
+  const cap = input.maxEntriesScanned > 0 ? input.maxEntriesScanned : children.length;
+  const branches: Array<AsyncGenerator<TraversedEntry>> = [];
+  for (const child of children) {
+    if (branches.length >= cap || isPastDeadline(input)) break;
+    if (!shouldDiscover(child, input)) continue;
+    branches.push(
+      walkBranch(
+        {
+          ...child,
+          visiblePath: path.join(parent.visiblePath, child.name),
+          depth: parent.depth + 1,
+        },
+        input,
+        visited,
+      ),
+    );
+  }
+  return branches;
 }
 
 async function* roundRobin<T>(branches: Array<AsyncGenerator<T>>): AsyncGenerator<T> {
@@ -624,7 +768,7 @@ async function resolveDirectory(inputPath: string): Promise<string | null> {
   return info?.isDirectory() ? resolved : null;
 }
 
-async function readChildren(directory: string): Promise<ChildEntry[]> {
+async function readChildren(directory: string, cap: number): Promise<ChildEntry[]> {
   const directoryInfo = await stat(directory).catch(() => null);
   if (!directoryInfo?.isDirectory()) return [];
 
@@ -638,14 +782,26 @@ async function readChildren(directory: string): Promise<ChildEntry[]> {
     cached.modifiedAtMs === directoryInfo.mtimeMs &&
     cached.changedAtMs === directoryInfo.ctimeMs
   ) {
-    rawEntries = cached.entries;
+    // The cap applies to cached listings too: a caller that lowered the cap must not inherit
+    // the wider listing a default caller stored.
+    rawEntries = cached.entries.length > cap ? cached.entries.slice(0, cap) : cached.entries;
   } else {
+    // Cap before sorting: the walk can never consume more than its scan budget, and sorting a
+    // six-figure listing with localeCompare costs hundreds of milliseconds per call.
     const dirents = await readdir(directory, { withFileTypes: true }).catch(() => [] as Dirent[]);
-    rawEntries = dirents
+    const truncated = dirents.length > cap;
+    const readable = truncated ? dirents.slice(0, cap) : dirents;
+    rawEntries = readable
       .map(toRawChildEntry)
       .filter((entry): entry is RawChildEntry => entry !== null)
       .sort((left, right) => left.name.localeCompare(right.name));
-    if (CAN_VALIDATE_DIRECTORY_CACHE_FROM_METADATA) {
+    // A truncated listing is not a listing of the directory, so it must not be served to a
+    // later request that reads with a wider cap.
+    if (
+      CAN_VALIDATE_DIRECTORY_CACHE_FROM_METADATA &&
+      !truncated &&
+      rawEntries.length <= DIRECTORY_LIST_CACHE_MAX_CHILDREN
+    ) {
       directoryListCache.set(directory, {
         expiresAt: Date.now() + DIRECTORY_LIST_CACHE_TTL_MS,
         modifiedAtMs: directoryInfo.mtimeMs,
@@ -656,9 +812,11 @@ async function readChildren(directory: string): Promise<ChildEntry[]> {
     }
   }
 
-  return (await Promise.all(rawEntries.map((entry) => resolveChild(directory, entry))))
-    .filter((entry): entry is ChildEntry => entry !== null)
-    .sort((left, right) => left.name.localeCompare(right.name));
+  // No second sort: resolveChild keeps each entry's name, so the listing is already in name
+  // order and re-sorting it was pure cost.
+  return (await Promise.all(rawEntries.map((entry) => resolveChild(directory, entry)))).filter(
+    (entry): entry is ChildEntry => entry !== null,
+  );
 }
 
 async function loadGitIgnoredPaths(root: string): Promise<Set<string>> {

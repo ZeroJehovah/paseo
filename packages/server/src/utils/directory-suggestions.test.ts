@@ -953,3 +953,140 @@ describe("relative typed-entry configuration", () => {
     expect(results).toEqual([{ path: "blankpage/editor", kind: "directory" }]);
   });
 });
+
+describe("bounded directory scanning", () => {
+  let boundsRoot: string;
+
+  beforeEach(() => {
+    boundsRoot = realpathSync.native(mkdtempSync(path.join(tmpdir(), "directory-bounds-")));
+  });
+
+  afterEach(() => {
+    rmSync(boundsRoot, { recursive: true, force: true });
+  });
+
+  function createSiblingFiles(directory: string, count: number, prefix = "entry"): void {
+    mkdirSync(directory, { recursive: true });
+    for (let index = 0; index < count; index += 1) {
+      writeFileSync(path.join(directory, `${prefix}-${String(index).padStart(5, "0")}.txt`), "");
+    }
+  }
+
+  async function searchWithinBounds(
+    options: {
+      query?: string;
+      includeFiles?: boolean;
+      blankQueryBehavior?: "none" | "children";
+      limit?: number;
+      maxEntriesScanned?: number;
+      browseMaxEntriesScanned?: number;
+      maxChildrenPerDirectory?: number;
+      deadlineMs?: number;
+      deadlineAt?: number;
+    } = {},
+  ) {
+    return searchDirectoryEntries({
+      root: boundsRoot,
+      query: options.query ?? "",
+      pathFormat: "relative",
+      includeFiles: options.includeFiles ?? true,
+      includeDirectories: true,
+      blankQueryBehavior: options.blankQueryBehavior ?? "children",
+      limit: options.limit ?? 100,
+      maxEntriesScanned: options.maxEntriesScanned,
+      browseMaxEntriesScanned: options.browseMaxEntriesScanned,
+      maxChildrenPerDirectory: options.maxChildrenPerDirectory,
+      deadlineMs: options.deadlineMs,
+      deadlineAt: options.deadlineAt,
+    });
+  }
+
+  // An oversized directory is the shape that took production down: 146,304 children were sorted
+  // and materialized in one synchronous block on every scan. Both caps are exercised at a small
+  // size here; their defaults (20,000 children, 4,000 entries per browse) are what bound the
+  // real directory.
+  it("caps the children one directory listing can contribute", async () => {
+    createSiblingFiles(boundsRoot, 300);
+
+    const capped = await searchWithinBounds({ maxChildrenPerDirectory: 50 });
+    const complete = await searchWithinBounds({ maxChildrenPerDirectory: 300 });
+
+    expect(capped).toHaveLength(50);
+    expect(complete).toHaveLength(100);
+    expect(capped).toEqual(complete.slice(0, 50));
+  });
+
+  it("caps the children a single browse scan considers", async () => {
+    createSiblingFiles(boundsRoot, 300);
+
+    const narrow = await searchWithinBounds({ browseMaxEntriesScanned: 50 });
+    const complete = await searchWithinBounds({});
+
+    expect(narrow).toHaveLength(50);
+    expect(narrow).toEqual(complete.slice(0, 50));
+  });
+
+  it("stops a browse once its wall-clock deadline passes", async () => {
+    createSiblingFiles(boundsRoot, 400);
+
+    const disabled = await searchWithinBounds({ deadlineMs: 0 });
+    const complete = await searchWithinBounds({});
+    expect(disabled).toEqual(complete);
+    expect(complete).toHaveLength(100);
+
+    await expect(searchWithinBounds({ deadlineAt: Date.now() - 1 })).resolves.toEqual([]);
+
+    const truncated = await searchWithinBounds({ deadlineMs: 1 });
+    const completePaths = new Set(complete.map((entry) => entry.path));
+    expect(truncated.length).toBeLessThan(complete.length);
+    for (const entry of truncated) expect(completePaths.has(entry.path)).toBe(true);
+  });
+
+  it("stops a walk once its wall-clock deadline passes", async () => {
+    for (let index = 0; index < 20; index += 1) {
+      createSiblingFiles(
+        path.join(boundsRoot, `branch-${String(index).padStart(2, "0")}`),
+        150,
+        "leaf",
+      );
+    }
+
+    const complete = await searchWithinBounds({ query: "leaf" });
+    const truncated = await searchWithinBounds({ query: "leaf", deadlineMs: 1 });
+
+    expect(complete).toHaveLength(100);
+    expect(truncated.length).toBeLessThan(complete.length);
+  });
+
+  it("serves one scan to concurrent identical requests", async () => {
+    createSiblingFiles(boundsRoot, 40);
+
+    const [first, second] = await Promise.all([searchWithinBounds({}), searchWithinBounds({})]);
+    expect(second).toBe(first);
+
+    const repeat = await searchWithinBounds({});
+    expect(repeat).not.toBe(first);
+    expect(repeat).toEqual(first);
+
+    const other = await searchWithinBounds({ query: "entry-00001" });
+    expect(other).not.toBe(repeat);
+  });
+
+  // The queued request demonstrates the gate through its own deadline: it cannot start until a
+  // slot frees, and by then the five milliseconds it was given have already gone.
+  it("queues excess scans behind the concurrency limit", async () => {
+    for (const name of ["branch-0", "branch-1", "branch-2"]) {
+      createSiblingFiles(path.join(boundsRoot, name), 1_500, "leaf");
+    }
+
+    const [running, waiting, queuedPastDeadline] = await Promise.all([
+      searchWithinBounds({ query: "branch-0" }),
+      searchWithinBounds({ query: "branch-1" }),
+      searchWithinBounds({ query: "branch-2", deadlineAt: Date.now() + 5 }),
+    ]);
+
+    expect(running.length).toBeGreaterThan(0);
+    expect(waiting.length).toBeGreaterThan(0);
+    expect(queuedPastDeadline).toEqual([]);
+  });
+});
