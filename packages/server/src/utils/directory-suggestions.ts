@@ -54,6 +54,7 @@ interface ChildEntry {
   name: string;
   resolvedPath: string;
   kind: DirectorySuggestionKind;
+  viaSymlink: boolean;
 }
 
 interface RawChildEntry {
@@ -374,7 +375,7 @@ async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
   if (!(input.maxEntriesScanned > 0)) return [];
   if (isPastDeadline(input)) return [];
   const roots = (await readChildren(input.root, input.maxChildrenPerDirectory)).filter((entry) =>
-    isPathInsideRoot(input.root, entry.resolvedPath),
+    staysInsideRoot(entry, input.root),
   );
   const visited = new Set<string>([input.root]);
   const branches = expandChildBranches(
@@ -416,7 +417,7 @@ async function* walkBranch(
   if (isPastDeadline(input)) return;
   visited.add(entry.resolvedPath);
   const children = (await readChildren(entry.resolvedPath, input.maxChildrenPerDirectory)).filter(
-    (child) => isPathInsideRoot(input.root, child.resolvedPath),
+    (child) => staysInsideRoot(child, input.root),
   );
   const branches = expandChildBranches(
     children,
@@ -473,14 +474,28 @@ async function* roundRobin<T>(branches: Array<AsyncGenerator<T>>): AsyncGenerato
   }
 }
 
+// Only a symlink can resolve outside the tree being walked. Every other child is its parent's
+// path plus a name, and the parent was already proved inside the root.
+function staysInsideRoot(entry: ChildEntry, root: string): boolean {
+  return !entry.viaSymlink || isPathInsideRoot(root, entry.resolvedPath);
+}
+
 function shouldDiscover(entry: ChildEntry, input: SearchInput): boolean {
-  if (isGitIgnoredPath(entry.resolvedPath, input)) return false;
+  if (isNewlyGitIgnored(entry, input)) return false;
   if (entry.kind === "file") {
     return input.includeFiles && !entry.name.startsWith(".");
   }
   if (IGNORED_DIRECTORY_NAMES.has(entry.name)) return false;
   if (!entry.name.startsWith(".")) return true;
   return input.hiddenDirectoryNames.has(entry.name);
+}
+
+// Traversal only descends through entries that already passed this check, so every ancestor of
+// a named child is known discoverable and only the entry itself can be newly ignored. A symlink
+// resolves to a path with different ancestors, so it still needs the full walk.
+function isNewlyGitIgnored(entry: ChildEntry, input: SearchInput): boolean {
+  if (entry.viaSymlink) return isGitIgnoredPath(entry.resolvedPath, input);
+  return input.gitIgnoredPaths.has(entry.resolvedPath);
 }
 
 function isGitIgnoredPath(absolutePath: string, input: SearchInput): boolean {
@@ -870,14 +885,14 @@ function toRawChildEntry(dirent: Dirent): RawChildEntry | null {
 async function resolveChild(directory: string, entry: RawChildEntry): Promise<ChildEntry | null> {
   const visiblePath = path.join(directory, entry.name);
   if (entry.kind !== "symlink") {
-    return { name: entry.name, resolvedPath: visiblePath, kind: entry.kind };
+    return { name: entry.name, resolvedPath: visiblePath, kind: entry.kind, viaSymlink: false };
   }
 
   const resolvedPath = await realpath(visiblePath).catch(() => null);
   if (!resolvedPath) return null;
   const info = await stat(resolvedPath).catch(() => null);
   const kind = getEntryKind(info);
-  return kind ? { name: entry.name, resolvedPath, kind } : null;
+  return kind ? { name: entry.name, resolvedPath, kind, viaSymlink: true } : null;
 }
 
 function getEntryKind(info: Stats | null): DirectorySuggestionKind | null {
@@ -886,10 +901,9 @@ function getEntryKind(info: Stats | null): DirectorySuggestionKind | null {
   return null;
 }
 
+// Reads already reject stale entries by expiry and by directory metadata, so this only has to
+// bound the map. Sweeping it for expired keys would cost a full pass on every cache miss.
 function pruneCache(): void {
-  if (directoryListCache.size <= DIRECTORY_LIST_CACHE_MAX_ENTRIES) return;
-  for (const [key, entry] of directoryListCache)
-    if (entry.expiresAt <= Date.now()) directoryListCache.delete(key);
   while (directoryListCache.size > DIRECTORY_LIST_CACHE_MAX_ENTRIES) {
     const key = directoryListCache.keys().next().value;
     if (!key) return;

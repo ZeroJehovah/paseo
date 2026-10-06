@@ -2,6 +2,29 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
+  paneFind: {
+    connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
+    historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",
+    revealFailure: "이 일치 항목을 표시할 수 없습니다. 다시 시도하세요.",
+    searching: "검색 중…",
+    loading: "불러오는 중…",
+    failed: "실패",
+    retry: "다시 시도",
+
+    title: "찾기",
+    placeholder: "패널에서 찾기",
+    close: "찾기 닫기",
+    matches: "검색 결과",
+    previous: "이전 일치 항목",
+    next: "다음 일치 항목",
+    toggleReplace: "바꾸기 표시 전환",
+    replaceWith: "바꿀 내용",
+    replace: "바꾸기",
+    replaceAll: "모두 바꾸기",
+    noMatches: "일치 항목 없음",
+    position: "{{current}} / {{total}}",
+    total: "일치 항목 {{total}}개",
+  },
   common: {
     back: "뒤로",
     loading: "불러오는 중...",
@@ -12,6 +35,7 @@ export const ko: TranslationResources = {
       copy: "복사",
       copyLine: "줄 복사",
       dismiss: "닫기",
+      reload: "다시 로드",
       retry: "다시 시도",
       search: "검색",
       select: "선택",
@@ -153,7 +177,7 @@ export const ko: TranslationResources = {
       initialPromptRequired: "초기 프롬프트가 필요합니다",
       alreadyLoading: "이미 불러오는 중입니다",
       uploadFailed: "파일을 업로드하지 못했습니다",
-      noClipboardImage: "클립보드에 이미지가 없습니다.",
+      noClipboardImage: "현재 클립보드에 이미지가 없습니다. 키보드에서 붙여넣기를 시도해 보세요.",
       pasteImageFailed: "이미지를 붙여넣지 못했습니다.",
       fileTooLarge: "{{fileName}}이(가) 너무 큽니다 (최대 {{size}})",
     },
@@ -208,6 +232,10 @@ export const ko: TranslationResources = {
     historyLoadFailed: "에이전트 기록을 로드할 수 없습니다.",
     messageCapped: "이 메시지는 길이 제한으로 잘렸습니다({{bytes}}바이트).",
     permission: {
+      rejectedPlan: "거부된 계획",
+      approvedPlan: "승인된 계획",
+      canceledPlan: "취소된 계획",
+
       plan: "계획",
       required: "권한 필요",
       deny: "거부",
@@ -221,7 +249,8 @@ export const ko: TranslationResources = {
     states: {
       notFound: "에이전트를 찾을 수 없습니다",
       failedToLoad: "에이전트를 불러오지 못했습니다",
-      reconnecting: "다시 연결하는 중",
+      reconnecting: "호스트에 다시 연결하는 중",
+      updating: "메시지 업데이트 중",
       timelineSyncFailed: "에이전트 기록을 새로고침할 수 없습니다.",
       timelineSyncRetrying: "재시도 중…",
       archivingTitle: "에이전트 보관 중...",
@@ -886,6 +915,9 @@ export const ko: TranslationResources = {
         openChangesTab: "변경사항 탭 열기",
         openDiffTab: "Diff 탭 열기",
         closeChangesTab: "변경사항 탭 닫기",
+        jumpToFile: {
+          title: "파일로 이동",
+        },
         binaryFile: "바이너리 파일",
         tooLarge: "표시하기에 diff가 너무 큽니다",
         previewTooLargeTitle: "Diff가 너무 커서 미리 볼 수 없습니다",
@@ -1280,6 +1312,7 @@ export const ko: TranslationResources = {
       detail: "로컬 데몬을 중지하는 중입니다.",
     },
     daemon: {
+      lifecycle: en.desktop.daemon.lifecycle,
       title: "데몬",
       status: {
         title: "상태",
@@ -1590,6 +1623,21 @@ export const ko: TranslationResources = {
     },
   },
   pairing: {
+    hostPassword: {
+      title: "{{host}}의 비밀번호",
+      label: "호스트 비밀번호",
+    },
+    hostConfirmation: {
+      title: "이 호스트에 연결할까요?",
+      description:
+        "이 호스트는 이 앱에서 코드를 실행하고 연결된 다른 호스트에 접근할 수 있게 됩니다. 알고 있는 호스트인 경우에만 연결하세요.",
+      descriptionChanged:
+        "이 링크는 이 호스트에 연결하는 방식을 변경합니다. 호스트는 이 앱에서 코드를 실행하고 연결된 다른 호스트에 접근할 수 있게 됩니다. 알고 있는 호스트인 경우에만 연결하세요.",
+      hostLabel: "호스트",
+      fingerprintLabel: "키 지문",
+      relayLabel: "릴레이",
+      connect: "연결",
+    },
     connectionMethods: {
       title: "연결 추가",
       direct: {
@@ -1926,8 +1974,11 @@ export const ko: TranslationResources = {
     groupInfo: "{{title}} 정보",
     sections: {
       general: "일반",
+      chat: "채팅",
       appearance: "모양",
-      layout: en.settings.sections.layout,
+      sidebar: "사이드바",
+      terminal: "터미널",
+      browser: "브라우저",
       editor: "편집기",
       shortcuts: "단축키",
       integrations: "통합",
@@ -1986,6 +2037,7 @@ export const ko: TranslationResources = {
     },
     general: {
       title: "일반",
+      sending: "전송",
       browserData: {
         title: "브라우저 데이터",
         siteData: "쿠키 및 사이트 데이터",
@@ -2014,8 +2066,6 @@ export const ko: TranslationResources = {
         },
       },
       serviceUrls: {
-        label: "서비스 URL",
-        description: "실행 중인 스크립트의 URL을 열 위치",
         options: {
           ask: "물어보기",
           inApp: "Paseo에서",
@@ -2034,7 +2084,6 @@ export const ko: TranslationResources = {
       toolCallDetail: {
         label: "도구 호출 표시",
         description: "타임라인에 도구 호출이 표시되는 방식",
-        accessibilityLabel: "도구 호출 표시 선택({{value}})",
         options: {
           overview: "요약",
           detailed: "전체 세부정보",
@@ -2271,6 +2320,9 @@ export const ko: TranslationResources = {
       },
     },
     host: {
+      password: {
+        guidance: "이 호스트를 제거한 뒤 이 데몬이 요구하는 비밀번호로 다시 추가하세요.",
+      },
       appearance: {
         title: "모양",
         name: {

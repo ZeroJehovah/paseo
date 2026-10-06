@@ -2,6 +2,30 @@ import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
 export const es: TranslationResources = {
+  paneFind: {
+    connectionFailure:
+      "No se pudo buscar en este chat. Comprueba la conexión con el host y vuelve a intentarlo.",
+    historyChangedFailure: "El chat cambió durante la búsqueda. Vuelve a buscar.",
+    revealFailure: "No se pudo mostrar esta coincidencia. Vuelve a intentarlo.",
+    searching: "Buscando…",
+    loading: "Cargando…",
+    failed: "Error",
+    retry: "Reintentar",
+
+    title: "Buscar",
+    placeholder: "Buscar en el panel",
+    close: "Cerrar búsqueda",
+    matches: "Coincidencias",
+    previous: "Coincidencia anterior",
+    next: "Siguiente coincidencia",
+    toggleReplace: "Mostrar reemplazo",
+    replaceWith: "Reemplazar con",
+    replace: "Reemplazar",
+    replaceAll: "Reemplazar todo",
+    noMatches: "Sin coincidencias",
+    position: "{{current}} de {{total}}",
+    total: "{{total}} coincidencias",
+  },
   common: {
     back: "Atrás",
     loading: "Cargando...",
@@ -12,6 +36,7 @@ export const es: TranslationResources = {
       copy: "Copiar",
       copyLine: "Copiar línea",
       dismiss: "Despedir",
+      reload: "Volver a cargar",
       retry: "Rever",
       search: "Buscar",
       select: "Seleccionar",
@@ -153,7 +178,8 @@ export const es: TranslationResources = {
       initialPromptRequired: "Se requiere aviso inicial",
       alreadyLoading: "Ya cargando",
       uploadFailed: "Failed to upload file",
-      noClipboardImage: "No hay ninguna imagen en el portapapeles",
+      noClipboardImage:
+        "No hay ninguna imagen en el portapapeles actual. Prueba a pegar desde el teclado.",
       pasteImageFailed: "No se pudo pegar la imagen",
       fileTooLarge: "{{fileName}} is too large (max {{size}})",
     },
@@ -208,6 +234,10 @@ export const es: TranslationResources = {
     historyLoadFailed: "No se pudo cargar el historial del agente",
     messageCapped: "Este mensaje fue truncado ({{bytes}} bytes).",
     permission: {
+      rejectedPlan: "Plan rechazado",
+      approvedPlan: "Plan aprobado",
+      canceledPlan: "Plan cancelado",
+
       plan: "Plan",
       required: "Permiso requerido",
       deny: "Denegar",
@@ -221,7 +251,8 @@ export const es: TranslationResources = {
     states: {
       notFound: "Agentno encontrado",
       failedToLoad: "No se pudo cargar el agente",
-      reconnecting: "Reconectando",
+      reconnecting: "Reconectando al host",
+      updating: "Actualizando mensajes",
       timelineSyncFailed: "No se pudo actualizar el historial del agente.",
       timelineSyncRetrying: "Reintentando…",
       archivingTitle: "Agente de archivo...",
@@ -910,6 +941,9 @@ export const es: TranslationResources = {
         openChangesTab: "Abrir la pestaña Cambios",
         openDiffTab: "Abrir la pestaña Diferencia",
         closeChangesTab: "Cerrar la pestaña Cambios",
+        jumpToFile: {
+          title: "Ir al archivo",
+        },
         binaryFile: "archivo binario",
         tooLarge: "La diferencia es demasiado grande para mostrarse",
         previewTooLargeTitle: "Este diff es demasiado grande para previsualizarlo",
@@ -1307,6 +1341,7 @@ export const es: TranslationResources = {
       detail: "Deteniendo el demonio local.",
     },
     daemon: {
+      lifecycle: en.desktop.daemon.lifecycle,
       title: "Daemon",
       status: {
         title: "Estado",
@@ -1624,6 +1659,21 @@ export const es: TranslationResources = {
     },
   },
   pairing: {
+    hostPassword: {
+      title: "Contraseña de {{host}}",
+      label: "Contraseña del host",
+    },
+    hostConfirmation: {
+      title: "¿Conectar con este host?",
+      description:
+        "Este host podrá ejecutar código en esta app y acceder a tus otros hosts conectados. Conéctate solo si lo reconoces.",
+      descriptionChanged:
+        "Este enlace cambia cómo te conectas a este host. El host podrá ejecutar código en esta app y acceder a tus otros hosts conectados. Conéctate solo si lo reconoces.",
+      hostLabel: "Host",
+      fingerprintLabel: "Huella de la clave",
+      relayLabel: "Relay",
+      connect: "Conectar",
+    },
     connectionMethods: {
       title: "Agregar conexión",
       direct: {
@@ -1962,8 +2012,11 @@ export const es: TranslationResources = {
     groupInfo: "Acerca de{{title}}",
     sections: {
       general: "General",
+      chat: "Chat",
       appearance: "Apariencia",
-      layout: en.settings.sections.layout,
+      sidebar: "Barra lateral",
+      terminal: "Terminal",
+      browser: "Navegador",
       editor: "Editor",
       shortcuts: "Atajos",
       integrations: "Integraciones",
@@ -2022,6 +2075,7 @@ export const es: TranslationResources = {
     },
     general: {
       title: "General",
+      sending: "Envío",
       browserData: {
         title: "Datos del navegador",
         siteData: "Cookies y datos de sitios",
@@ -2052,8 +2106,6 @@ export const es: TranslationResources = {
         },
       },
       serviceUrls: {
-        label: "URL de servicio",
-        description: "Dónde abrir URL desde scripts en ejecución",
         options: {
           ask: "Preguntar",
           inApp: "EnPaseo",
@@ -2073,7 +2125,6 @@ export const es: TranslationResources = {
       toolCallDetail: {
         label: "Visualización de llamadas a herramientas",
         description: "Cómo aparecen las llamadas a herramientas en la cronología",
-        accessibilityLabel: "Seleccionar visualización de llamadas a herramientas ({{value}})",
         options: {
           overview: "Resumen",
           detailed: "Detalle completo",
@@ -2313,6 +2364,9 @@ export const es: TranslationResources = {
       },
     },
     host: {
+      password: {
+        guidance: "Elimina este host y vuelve a añadirlo con la contraseña que pide este daemon.",
+      },
       appearance: {
         title: "Apariencia",
         name: {
